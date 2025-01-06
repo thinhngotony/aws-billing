@@ -49,19 +49,22 @@ func HWC() {
 		return
 	}
 
+	curUsage := Usage{
+		UsageStart: time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Unix(),
+		UsageEnd:   now.Unix(),
+		UsageCost:  currentMonthCost.TotalAmount.InexactFloat64(),
+	}
+
 	costData := CostData{
 		Granularity: "monthly",
 		Currency:    goutil.String(currentMonthCost.Currency),
-		MonthToDate: Usage{
-			UsageStart: time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Unix(),
-			UsageEnd:   now.Unix(),
-			UsageCost:  currentMonthCost.TotalAmount.InexactFloat64(),
-		},
 		LastMonth: Usage{
 			UsageStart: time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, time.UTC).Unix(),
 			UsageEnd:   time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Unix(),
 			UsageCost:  lastMonthCost.TotalAmount.InexactFloat64(),
 		},
+		MonthToDate: curUsage,
+		Forecast:    curUsage, // Because HWC not support forecast value => use the same as current
 	}
 
 	// Marshal the response data to JSON
