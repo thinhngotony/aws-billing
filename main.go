@@ -56,15 +56,42 @@ func main() {
 		return
 	}
 
-	// Calculate the percentage change
+	// Get forecasted cost for current month
+	forecastedCost, err := getForecast(client, now.Format("2006-01-02"), currentMonthStart.AddDate(0, 1, 0).Format("2006-01-02"))
+	if err != nil {
+		fmt.Printf("Error getting forecasted cost: %v\n", err)
+		return
+	}
+
+	// Calculate the percentage changes
 	currentAmount := parseFloat(currentCost)
 	lastAmount := parseFloat(lastMonthCost)
-	percentageChange := ((currentAmount - lastAmount) / lastAmount) * 100
+	mtdPercentageChange := ((currentAmount - lastAmount) / lastAmount) * 100
 
-	fmt.Printf("\nCost Summary\n")
-	fmt.Printf("Month-to-date cost: $%.2f\n", currentAmount)
-	fmt.Printf("%.0f%% compared to last month for same period ($%.2f)\n", percentageChange, lastAmount)
-	fmt.Printf("Last month's total cost: $%.2f\n", parseFloat(lastMonthTotalCost))
+	forecastAmount := parseFloat(forecastedCost)
+	lastMonthAmount := parseFloat(lastMonthTotalCost)
+	forecastPercentageChange := ((forecastAmount - lastMonthAmount) / lastMonthAmount) * 100
+
+	// Print the cost summary
+	fmt.Println("\nCost summary")
+	fmt.Printf("\nMonth-to-date cost\n")
+	fmt.Printf("$%.2f\n", currentAmount)
+	fmt.Printf("%.0f%% compared to last month for same period\n", mtdPercentageChange)
+
+	fmt.Printf("\nLast month's cost for same time period\n")
+	fmt.Printf("$%.2f\n", lastAmount)
+	fmt.Printf("%s %d–%d, %d\n",
+		lastMonthStart.Month().String()[:3],
+		lastMonthStart.Day(),
+		lastMonthSamePeriodEnd.Day(),
+		lastMonthStart.Year())
+
+	fmt.Printf("\nTotal forecasted cost for current month\n")
+	fmt.Printf("$%.2f\n", forecastAmount)
+	fmt.Printf("%.0f%% compared to last month's total costs\n", forecastPercentageChange)
+
+	fmt.Printf("\nLast month's total cost\n")
+	fmt.Printf("$%.2f\n", lastMonthAmount)
 }
 
 func getCost(client *costexplorer.Client, startDate, endDate string) (string, error) {
@@ -84,6 +111,28 @@ func getCost(client *costexplorer.Client, startDate, endDate string) (string, er
 
 	if len(result.ResultsByTime) > 0 {
 		return *result.ResultsByTime[0].Total["UnblendedCost"].Amount, nil
+	}
+
+	return "0", nil
+}
+
+func getForecast(client *costexplorer.Client, startDate, endDate string) (string, error) {
+	input := &costexplorer.GetCostForecastInput{
+		TimePeriod: &types.DateInterval{
+			Start: aws.String(startDate),
+			End:   aws.String(endDate),
+		},
+		Granularity: types.GranularityMonthly,
+		Metric:      types.MetricUnblendedCost,
+	}
+
+	result, err := client.GetCostForecast(context.TODO(), input)
+	if err != nil {
+		return "0", err
+	}
+
+	if result.Total != nil && result.Total.Amount != nil {
+		return *result.Total.Amount, nil
 	}
 
 	return "0", nil
