@@ -2,38 +2,59 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/costexplorer"
 	"github.com/aws/aws-sdk-go-v2/service/costexplorer/types"
 )
 
+type AwsSecret struct {
+	SecretAccessKey string `json:"secret_access_key"`
+	AccessKeyID     string `json:"access_key_id"`
+}
+
+type CostData struct {
+	Granularity string `json:"granularity"`
+	Currency    string `json:"currency"`
+	MonthToDate Usage  `json:"month_to_date"`
+	Forecast    Usage  `json:"forecast"`
+	LastMonth   Usage  `json:"last_month"`
+}
+
+type Usage struct {
+	UsageStart int64   `json:"usage_start"`
+	UsageEnd   int64   `json:"usage_end"`
+	UsageCost  float64 `json:"usage_cost"`
+}
+
 func main() {
-	// Load AWS configuration
-	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion("us-east-1"))
+	// Load AWS configuration from secret store
+	awsSecret := AwsSecret{
+		AccessKeyID:     "*",
+		SecretAccessKey: "*",
+	}
+
+	cfg, err := config.LoadDefaultConfig(context.TODO(),
+		config.WithRegion("us-east-1"),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(awsSecret.AccessKeyID, awsSecret.SecretAccessKey, "")),
+	)
 	if err != nil {
 		fmt.Printf("Error loading configuration: %v\n", err)
 		return
 	}
 
-	// Create a Cost Explorer client
 	client := costexplorer.NewFromConfig(cfg)
 
-	// Get current time
 	now := time.Now()
-
-	// Get the first day of current month
 	currentMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-
-	// Get the first day of last month
 	lastMonthStart := currentMonthStart.AddDate(0, -1, 0)
-
-	// Calculate the same period last month
-	daysInCurrentPeriod := now.Sub(currentMonthStart).Hours() / 24
-	lastMonthSamePeriodEnd := lastMonthStart.AddDate(0, 0, int(daysInCurrentPeriod))
+	lastMonthComparisonStart := lastMonthStart
+	lastMonthComparisonEnd := time.Date(lastMonthStart.Year(), lastMonthStart.Month(), now.Day(), now.Hour(), now.Minute(), now.Second(), 0, time.UTC)
 
 	// Get current month-to-date cost
 	currentCost, err := getCost(client, currentMonthStart.Format("2006-01-02"), now.Format("2006-01-02"))
@@ -42,12 +63,14 @@ func main() {
 		return
 	}
 
-	// Get last month's cost for the same period
-	lastMonthCost, err := getCost(client, lastMonthStart.Format("2006-01-02"), lastMonthSamePeriodEnd.Format("2006-01-02"))
-	if err != nil {
-		fmt.Printf("Error getting last month cost: %v\n", err)
-		return
-	}
+	// // Get last month's cost for the same period
+	// lastMonthCost, err := getCost(client,
+	// 	lastMonthComparisonStart.Format("2006-01-02"),
+	// 	lastMonthComparisonEnd.Format("2006-01-02"))
+	// if err != nil {
+	// 	fmt.Printf("Error getting last month cost: %v\n", err)
+	// 	return
+	// }
 
 	// Get last month's total cost
 	lastMonthTotalCost, err := getCost(client, lastMonthStart.Format("2006-01-02"), currentMonthStart.Format("2006-01-02"))
@@ -63,35 +86,36 @@ func main() {
 		return
 	}
 
-	// Calculate the percentage changes
-	currentAmount := parseFloat(currentCost)
-	lastAmount := parseFloat(lastMonthCost)
-	mtdPercentageChange := ((currentAmount - lastAmount) / lastAmount) * 100
+	// Prepare the response data
+	costData := CostData{
+		Granularity: "monthly",
+		Currency:    "usd",
+		MonthToDate: Usage{
+			UsageStart: currentMonthStart.Unix(),
+			UsageEnd:   now.Unix(),
+			UsageCost:  parseFloat(currentCost),
+		},
+		Forecast: Usage{
+			UsageStart: now.Unix(),
+			UsageEnd:   currentMonthStart.AddDate(0, 1, 0).Unix(),
+			UsageCost:  parseFloat(forecastedCost),
+		},
+		LastMonth: Usage{
+			UsageStart: lastMonthComparisonStart.Unix(),
+			UsageEnd:   lastMonthComparisonEnd.Unix(),
+			UsageCost:  parseFloat(lastMonthTotalCost),
+		},
+	}
 
-	forecastAmount := parseFloat(forecastedCost)
-	lastMonthAmount := parseFloat(lastMonthTotalCost)
-	forecastPercentageChange := ((forecastAmount - lastMonthAmount) / lastMonthAmount) * 100
+	// Marshal the response data to JSON
+	response, err := json.MarshalIndent(map[string]CostData{"data": costData}, "", "  ")
+	if err != nil {
+		fmt.Printf("Error marshalling JSON: %v\n", err)
+		return
+	}
 
-	// Print the cost summary
-	fmt.Println("\nCost summary")
-	fmt.Printf("\nMonth-to-date cost\n")
-	fmt.Printf("$%.2f\n", currentAmount)
-	fmt.Printf("%.0f%% compared to last month for same period\n", mtdPercentageChange)
-
-	fmt.Printf("\nLast month's cost for same time period\n")
-	fmt.Printf("$%.2f\n", lastAmount)
-	fmt.Printf("%s %d–%d, %d\n",
-		lastMonthStart.Month().String()[:3],
-		lastMonthStart.Day(),
-		lastMonthSamePeriodEnd.Day(),
-		lastMonthStart.Year())
-
-	fmt.Printf("\nTotal forecasted cost for current month\n")
-	fmt.Printf("$%.2f\n", forecastAmount)
-	fmt.Printf("%.0f%% compared to last month's total costs\n", forecastPercentageChange)
-
-	fmt.Printf("\nLast month's total cost\n")
-	fmt.Printf("$%.2f\n", lastMonthAmount)
+	// Print the JSON response
+	fmt.Println(string(response))
 }
 
 func getCost(client *costexplorer.Client, startDate, endDate string) (string, error) {
@@ -100,7 +124,7 @@ func getCost(client *costexplorer.Client, startDate, endDate string) (string, er
 			Start: aws.String(startDate),
 			End:   aws.String(endDate),
 		},
-		Granularity: types.GranularityMonthly,
+		Granularity: types.GranularityDaily,
 		Metrics:     []string{"UnblendedCost"},
 	}
 
@@ -109,11 +133,14 @@ func getCost(client *costexplorer.Client, startDate, endDate string) (string, er
 		return "0", err
 	}
 
-	if len(result.ResultsByTime) > 0 {
-		return *result.ResultsByTime[0].Total["UnblendedCost"].Amount, nil
+	var totalCost float64
+	for _, period := range result.ResultsByTime {
+		if amount := period.Total["UnblendedCost"].Amount; amount != nil {
+			totalCost += parseFloat(*amount)
+		}
 	}
 
-	return "0", nil
+	return fmt.Sprintf("%.2f", totalCost), nil
 }
 
 func getForecast(client *costexplorer.Client, startDate, endDate string) (string, error) {
